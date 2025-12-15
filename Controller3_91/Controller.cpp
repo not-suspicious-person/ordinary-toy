@@ -32,26 +32,6 @@ messages intToMessages (int16_t value) {
   }
 }
 
-uint16_t Controller::read16(File& f) {
-    uint16_t result;
-    ((uint8_t*)&result)[0] = f.read();
-    ((uint8_t*)&result)[1] = f.read();
-    return result;
-}
-
-uint32_t Controller::read32(File& f) {
-    uint32_t result;
-    ((uint8_t*)&result)[0] = f.read();
-    ((uint8_t*)&result)[1] = f.read();
-    ((uint8_t*)&result)[2] = f.read();
-    ((uint8_t*)&result)[3] = f.read();
-    return result;
-}
-
-uint16_t Controller::rgb565(uint8_t r, uint8_t g, uint8_t b) { 
-  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); 
-}
-
 void Controller::tftDrawString(const String& s, int16_t x, int16_t y, uint8_t textSize) { 
   _tft->setTextSize(textSize); 
   _tft->setCursor(x, y); 
@@ -66,6 +46,13 @@ void Controller::tftDrawCentreString(const String& s, int16_t cx, int16_t y, uin
   int16_t x = cx - (int16_t)(w / 2); 
   _tft->setCursor(x, y); 
   _tft->print(s); 
+}
+
+uint16_t Controller::blinkButtonColor(bool &blink, bool buttonActive, uint16_t baseColor, uint16_t blinkColor) {
+  if (buttonActive) {
+    blink = !blink;
+  }
+  return blink ? blinkColor : baseColor;
 }
 
 String FormatedString(int16_t number, uint8_t width) {
@@ -105,10 +92,7 @@ String FormatedString(String myString, uint8_t width) {
 //Pointer on current object yo work with ESPNOW callback
 Controller* Controller::_instance = nullptr;
 
-bool Controller::tftJpgDrawCallback(int16_t x, int16_t y,
-                                    uint16_t w, uint16_t h,
-                                    uint16_t* bitmap)
-{
+bool Controller::tftJpgDrawCallback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
   if (!_instance || !_instance->_tft) return false;
 
   _instance->_tft->draw16bitRGBBitmap(x, y, bitmap, w, h);
@@ -117,10 +101,8 @@ bool Controller::tftJpgDrawCallback(int16_t x, int16_t y,
 
 Controller::Controller() :
 //initialisation display on HSPI and touchscreen on VSPI 
-//  _tft(),
-//  _spiHSPI(HSPI), 
   _touchscreen(XPT2046_CS, XPT2046_IRQ),
-  _touchscreenSPI(VSPI)
+  _spiVSPI(VSPI)
 {
   _instance = this;
 }
@@ -145,14 +127,8 @@ bool Controller::initialization_EEPROM() {
       EEPROM.put(address, _sensorMac[i]);
       address += sizeof(uint8_t);
     }
-    //Camera MAC 16-21
+    //Presets 16-...
     address = 16;
-    for (uint8_t i = 0; i < 6; i++) {
-      EEPROM.put(address, _cameraMac[i]);
-      address += sizeof(uint8_t);
-    }
-    //Presets 22-...
-    address = 22;
     for (uint8_t i = 0; i < NUMBER_OF_PRESET; i++) {
       for (uint8_t j = 0; j < 2; j++) {
         EEPROM.put(address, _presets[i][j]);
@@ -182,14 +158,8 @@ bool Controller::initialization_EEPROM() {
       EEPROM.get(address, _sensorMac[i]);
       address += sizeof(uint8_t);
     }
-    //Camera MAC 16-21
+    //Presets 16-...
     address = 16;
-    for (uint8_t i = 0; i < 6; i++) {
-      EEPROM.get(address, _cameraMac[i]);
-      address += sizeof(uint8_t);
-    }
-    //Presets 22-...
-    address = 22;
     for (uint8_t i = 0; i < NUMBER_OF_PRESET; i++) {
       for (uint8_t j = 0; j < 2; j++) {
         EEPROM.get(address, _presets[i][j]);
@@ -202,9 +172,6 @@ bool Controller::initialization_EEPROM() {
     Serial.printf("Sensors  MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                   _sensorMac[0], _sensorMac[1], _sensorMac[2],
                   _sensorMac[3], _sensorMac[4], _sensorMac[5]);
-    Serial.printf("Camera   MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                  _cameraMac[0], _cameraMac[1], _cameraMac[2],
-                  _cameraMac[3], _cameraMac[4], _cameraMac[5]);
   }
   return true;
 }
@@ -212,12 +179,6 @@ bool Controller::initialization_EEPROM() {
 void Controller::begin() {
   analogReadResolution(12);
   delay(100);
-  pinMode(SD_CS, OUTPUT);
-  digitalWrite(SD_CS, HIGH);
-  pinMode(TFT_CS, OUTPUT);
-  digitalWrite(TFT_CS, HIGH);
-  pinMode(XPT2046_CS, OUTPUT);
-  digitalWrite(XPT2046_CS, HIGH);
 
   /*-----------------ENCODERS---------------*/
   ESP32Encoder::useInternalWeakPullResistors = puType::none;
@@ -255,16 +216,15 @@ void Controller::begin() {
   delay(500);
 
   /*-----------------TOUCHSCREEN---------------*/
-  _touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-  _touchscreen.begin(_touchscreenSPI);
+  _spiVSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  _touchscreen.begin(_spiVSPI);
   _touchscreen.setRotation(1);
   delay(500);
 
   /*-----------------SD---------------*/
 
-  digitalWrite(TFT_CS, HIGH); 
   digitalWrite(XPT2046_CS, HIGH); 
-  if (!SD.begin(SD_CS, _touchscreenSPI, 10000000U)) {
+  if (!SD.begin(SD_CS, _spiVSPI, 10000000U)) {
     Serial.println("SD Card initialization failed!"); 
     _is_SD_Initialized = false; 
     _tft->setTextColor(TFT_RED, TFT_BLACK); 
@@ -283,17 +243,12 @@ void Controller::begin() {
 
   /*---------WI-FI-AND-ESP-NOW--------*/
   WiFi.mode(WIFI_AP);
-  const char* apSsid = "LABETA_CTRL";
-  const char* apPass = "";
 
-  bool ap_ok = WiFi.softAP(apSsid, apPass);
+  bool ap_ok = WiFi.softAP(apSsid, apPass, 1, false);
   if (!ap_ok) {
     Serial.println("Failed to start SoftAP");
   } else {
     Serial.print("SoftAP started. SSID: ");
-    Serial.print(apSsid);
-    Serial.print("  PASS: <none>  IP: ");
-    Serial.println(WiFi.softAPIP());
   }
 
   if (esp_now_init() != ESP_OK) {
@@ -511,117 +466,144 @@ void Controller::display_Data() {
       static bool blink = false;
       static uint32_t temp_color = TFT_DARKGREEN;
       _tft->setTextColor(TFT_WHITE);
-      if (!_buttons_active[0] && !_buttons_active[1] && !_buttons_active[12]) blink = false;
+
+      if (!_buttons_active[0] && !_buttons_active[1] && !_buttons_active[12]) {
+        blink = false;
+      }
+
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[0]) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[0]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[0], TFT_DARKGREEN);
         _tft->fillRect(0, 0, 102, 50, temp_color);
         tftDrawCentreString("MENU", 53, 15, FONT_SIZE_BIG);
       }
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[1]) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[1]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[1], TFT_DARKGREEN);
         _tft->fillRect(104, 0, 102, 50, temp_color);
         tftDrawCentreString("SENSOR", 156, 15, FONT_SIZE_BIG);
       }
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[12]) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[12]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[12], TFT_DARKGREEN);
         _tft->fillRect(208, 0, 102, 50, temp_color);
         tftDrawCentreString("PRESET", 263, 15, FONT_SIZE_BIG);
       }
-      break;}
+    }
     case MENU: {
+      const int menuTopRowY    = 70;
+      const int menuRowHeight  = 75;
+      const int menuSecondRowY = menuTopRowY + menuRowHeight + 1;
       static bool blink = false;
       static uint32_t temp_color = TFT_DARKGREEN;
       static bool previous_buttons_state[NUMBER_OF_BUTTONS] = {false};
-      if (_current_screen_state != _previous_screen_state) blink = false;
+
+      if (_current_screen_state != _previous_screen_state)
+        blink = false;
+
       _tft->setTextColor(TFT_WHITE);
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[2] ) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[2]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) || _buttons_active[2]) {
+        temp_color = blinkButtonColor(blink, _buttons_active[2], TFT_DARKGREEN);
         _tft->fillRect(0, 0, 160, 50, temp_color);
         tftDrawCentreString("BACK", 75, 15, FONT_SIZE_BIG);
       }
 
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[CAMERA_BTN]) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[CAMERA_BTN]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[CAMERA_BTN], TFT_DARKGREEN);
         _tft->fillRect(161, 0, 160, 50, temp_color);
         tftDrawCentreString("CAMERA", 240, 15, FONT_SIZE_BIG);
       }
 
-      const int menuTopRowY    = 70;
-      const int menuRowHeight  = 75;
-      const int menuSecondRowY = menuTopRowY + menuRowHeight + 1;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[HOR_TO_0] || previous_buttons_state[HOR_TO_0]) {
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[HOR_TO_0] || previous_buttons_state[HOR_TO_0]) {
-        if  (previous_buttons_state[HOR_TO_0] && !_buttons_active[HOR_TO_0]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[HOR_TO_0]) blink = !blink;
+        if (previous_buttons_state[HOR_TO_0] && !_buttons_active[HOR_TO_0])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[HOR_TO_0], TFT_DARKGREEN);
         _tft->fillRect(8, menuTopRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("HOR TO 0", 46, menuTopRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[VER_TO_0] || previous_buttons_state[VER_TO_0]) {
-        if  (previous_buttons_state[VER_TO_0] && !_buttons_active[VER_TO_0]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[VER_TO_0]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[VER_TO_0] || previous_buttons_state[VER_TO_0]) {
+
+        if (previous_buttons_state[VER_TO_0] && !_buttons_active[VER_TO_0])
+          blink = false;
+    
+        temp_color = blinkButtonColor(blink, _buttons_active[VER_TO_0], TFT_DARKGREEN);
         _tft->fillRect(84, menuTopRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("VER TO 0", 122, menuTopRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[ALL_TO_0] || previous_buttons_state[ALL_TO_0]) {
-        if  (previous_buttons_state[ALL_TO_0] && !_buttons_active[ALL_TO_0]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[ALL_TO_0]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[ALL_TO_0] || previous_buttons_state[ALL_TO_0]) {
+
+        if (previous_buttons_state[ALL_TO_0] && !_buttons_active[ALL_TO_0])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[ALL_TO_0], TFT_DARKGREEN);
         _tft->fillRect(160, menuTopRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("ALL TO 0", 198, menuTopRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[MUTE] || previous_buttons_state[MUTE]) {
-        if  (previous_buttons_state[MUTE] && !_buttons_active[MUTE]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[MUTE]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+      _buttons_active[MUTE] || previous_buttons_state[MUTE]) {
+
+        if (previous_buttons_state[MUTE] && !_buttons_active[MUTE])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[MUTE], TFT_DARKGREEN);
         _tft->fillRect(236, menuTopRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("MUTE", 274, menuTopRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[CONNECT] || previous_buttons_state[CONNECT]) {
-        if  (previous_buttons_state[CONNECT] && !_buttons_active[CONNECT]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[CONNECT]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[CONNECT] || previous_buttons_state[CONNECT]) {
+
+        if (previous_buttons_state[CONNECT] && !_buttons_active[CONNECT])
+          blink = false;
+    
+        temp_color = blinkButtonColor(blink, _buttons_active[CONNECT], TFT_DARKGREEN);
         _tft->fillRect(8, menuSecondRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("CONNECT", 46, menuSecondRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[HOR_SET_0] || previous_buttons_state[HOR_SET_0]) {
-        if  (previous_buttons_state[HOR_SET_0] && !_buttons_active[HOR_SET_0]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[HOR_SET_0]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[HOR_SET_0] || previous_buttons_state[HOR_SET_0]) {
+
+        if (previous_buttons_state[HOR_SET_0] && !_buttons_active[HOR_SET_0])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[HOR_SET_0], TFT_DARKGREEN);
         _tft->fillRect(84, menuSecondRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("HOR SET 0", 122, menuSecondRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[VER_SET_0] || previous_buttons_state[VER_SET_0]) {
-        if  (previous_buttons_state[VER_SET_0] && !_buttons_active[VER_SET_0]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[VER_SET_0]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[VER_SET_0] || previous_buttons_state[VER_SET_0]) {
+
+        if (previous_buttons_state[VER_SET_0] && !_buttons_active[VER_SET_0])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[VER_SET_0], TFT_DARKGREEN);
         _tft->fillRect(160, menuSecondRowY, 75, menuRowHeight, temp_color);
-        tftDrawCentreString("7", 198, menuSecondRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
+        tftDrawCentreString("VER_SET_0", 198, menuSecondRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      if ((_current_screen_state != _previous_screen_state) || _buttons_active[_8] || previous_buttons_state[_8]) {
-        if  (previous_buttons_state[_8] && !_buttons_active[_8]) blink = false;
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[_8]) blink = !blink;
+      if ((_current_screen_state != _previous_screen_state) ||
+          _buttons_active[_8] || previous_buttons_state[_8]) {
+
+        if (previous_buttons_state[_8] && !_buttons_active[_8])
+          blink = false;
+
+        temp_color = blinkButtonColor(blink, _buttons_active[_8], TFT_DARKGREEN);
         _tft->fillRect(236, menuSecondRowY, 75, menuRowHeight, temp_color);
         tftDrawCentreString("8", 274, menuSecondRowY + menuRowHeight / 2 - 5, FONT_SIZE_SMALL);
       }
 
-      for (uint8_t i = 0; i < NUMBER_OF_BUTTONS; i++) {previous_buttons_state[i] =  _buttons_active[i];}
-      
+      for (uint8_t i = 0; i < NUMBER_OF_BUTTONS; i++) {
+        previous_buttons_state[i] = _buttons_active[i];
+      }
+
       break;
     }
     case SENSOR_PANEL: {
@@ -629,9 +611,9 @@ void Controller::display_Data() {
       static uint32_t temp_color = TFT_DARKGREEN;
       if (_current_screen_state != _previous_screen_state) blink = false;
       _tft->setTextColor(TFT_WHITE);
+
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[3]) {
-        temp_color = blink ? TFT_PURPLE : TFT_DARKGREEN;
-        if (_buttons_active[3]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[3], TFT_DARKGREEN);
         _tft->fillRect(0, 0, 160, 50, temp_color);
         tftDrawCentreString("BACK", 75, 15, FONT_SIZE_BIG);
       }
@@ -690,14 +672,9 @@ void Controller::display_Data() {
       _tft->setTextColor(TFT_WHITE);
 
       if ((_current_screen_state != _previous_screen_state) || _buttons_active[13]) {
-        temp_color = blink ? TFT_PURPLE : (_preset_slider_on_set ? TFT_RED : TFT_DARKGREEN);
-        if (_buttons_active[13]) blink = !blink;
+        temp_color = blinkButtonColor(blink, _buttons_active[13], TFT_DARKGREEN);
         _tft->fillRect(0, 0, 160, 50, temp_color);
         tftDrawCentreString("BACK", 75, 15, FONT_SIZE_BIG);
-      }
-
-      if (_current_screen_state != _previous_screen_state) {
-        _tft->drawRect(170, 0, 140, 50, TFT_WHITE);
       }
 
       if ((_current_screen_state != _previous_screen_state) ||
@@ -982,15 +959,6 @@ void Controller::handleDataRecv(const esp_now_recv_info_t *info, const uint8_t *
     this->set_new_receiverMAC(info);
     _waiting_for_new_MAC = false;
   }
-
-  /*
-  if (sender == CAMERA_PLATFORM && message == NEW_CONTROLLER) { 
-    for (int i=0;i<6;i++) _cameraMac[i] = info->src_addr[i]; 
-    Serial.printf("Camera MAC saved: %02X:%02X:%02X:%02X:%02X:%02X\n", 
-                  _cameraMac[0],_cameraMac[1],_cameraMac[2],
-                  _cameraMac[3],_cameraMac[4],_cameraMac[5]);
-  }
-  */
 }
 
 void Controller::defaultOnDataSent(const uint8_t* mac, esp_now_send_status_t status) {
@@ -1021,11 +989,6 @@ void Controller::sendStateTo(const uint8_t* mac, messages message) {
     Serial.println("ESP-NOW not initialized");
     return;
   }
-
-  if (isAllZeroMac(mac)) {
-        Serial.println("sendStateTo: MAC is all zero, skip sending");
-        return;
-    }
 
   if (!addPeer(mac)) {return;}
 
@@ -1558,62 +1521,34 @@ void  Controller::savePreset(uint8_t preset_number) {
   if (EEPROM.commit()) {Serial.printf("New presset %d has been successfully saved\n", preset_number);}
 }
 
-void Controller::startSoftAP(uint8_t channel, uint16_t port) { 
-  if (_ap_started) return;
-
-  WiFi.mode(WIFI_AP_STA);
-
-  uint8_t pri = 1; 
-  wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE; 
-  esp_wifi_get_channel(&pri, &sec); _softap_channel = pri;
-
-  const char* ap_ssid = "LABETA_CTRL"; 
-  WiFi.softAP(ap_ssid, "", _softap_channel, false);
-
-  esp_wifi_get_mac(WIFI_IF_AP, _softap_bssid); 
-  Serial.printf("SoftAP MAC: %02X:%02X:%02X:%02X:%02X:%02X ch=%u IP=%s\n", 
-                _softap_bssid[0], _softap_bssid[1], _softap_bssid[2], 
-                _softap_bssid[3], _softap_bssid[4], _softap_bssid[5], 
-                _softap_channel, WiFi.softAPIP().toString().c_str());
-
-  if (_camServer) { 
-    _camServer->stop(); 
-    delete _camServer; 
-    _camServer = nullptr; 
-  } 
-  _cam_server_port = port; 
-  _camServer = new WiFiServer(_cam_server_port); 
+void Controller::startCameraServer(uint16_t port) {
+  if (_camServer) {
+    _camServer->stop();
+    delete _camServer;
+    _camServer = nullptr;
+  }
+  _cam_server_port = port;
+  _camServer = new WiFiServer(_cam_server_port);
   _camServer->begin();
-
-  if (!_cam_scaled_row) _cam_scaled_row = (uint16_t*)malloc(320 * sizeof(uint16_t)); 
-  _ap_started = true; 
 }
 
-void Controller::stopSoftAP() { 
-  if (!_ap_started) return; 
-  if (_camServer) { 
-    _camServer->stop(); 
-    delete _camServer; 
-    _camServer = nullptr; 
-  } 
-  if (_cam_scaled_row) { 
-    free(_cam_scaled_row); 
-    _cam_scaled_row = nullptr; 
-  } 
-  WiFi.softAPdisconnect(true); 
-  _ap_started = false; 
-  Serial.println("SoftAP stopped"); 
+void Controller::stopCameraServer() {
+  if (_camServer) {
+    _camServer->stop();
+    delete _camServer;
+    _camServer = nullptr;
+  }
+  Serial.println("Camera TCP server stopped");
 }
 
 void Controller::startCameraStream(uint16_t port) {
-  if (!_ap_started) startSoftAP(1, port);
+  this->sendStateTo(_receiverMac, GO_STREAM);
+  startCameraServer(port);
 }
 
 void Controller::stopCameraStream() {
-  if (_camRgb565Buf) {
-    free(_camRgb565Buf);
-    _camRgb565Buf = nullptr;
-  }
+  this->sendStateTo(_receiverMac, STOP_STREAM);
+  stopCameraServer();
 }
 
 void Controller::handleCameraTCP() {
@@ -1741,36 +1676,24 @@ void Controller::handleCameraTCP() {
   }
 }
 
-bool Controller::isAllZeroMac(const uint8_t* mac) { 
-  for (uint8_t i = 0; i < 6; i++) { 
-    if (mac[i] != 0) return false; 
-  } 
-  return true; 
-}
-
 bool Controller::isTouchOnButtonArea(int16_t x, int16_t y) {
   switch (_current_screen_state) {
     case MAIN:
-      // Верхні кнопки: MENU, SENSOR, PRESET (y < 50)
       if (y < 50) return true;
       return false;
 
     case MENU:
-      // Верхня кнопка BACK
       if (y < 50) return true;
-      if (y >= 70 && y <= 70 + 74 && x >= 8 && x <= 311) return true;          // верхній ряд
-      if (y >= 70 + 74 + 1 && y <= 70 + 74 + 1 + 74 && x >= 8 && x <= 311) return true; // нижній ряд
+      if (y >= 70 && y <= 70 + 74 && x >= 8 && x <= 311) return true;
+      if (y >= 70 + 74 + 1 && y <= 70 + 74 + 1 + 74 && x >= 8 && x <= 311) return true;
       return false;
 
     case SENSOR_PANEL:
-      // Верхня кнопка BACK
       if (y < 50) return true;
       return false;
 
     case PRESETS:
-      // Верхня кнопка BACK
       if (y < 50) return true;
-      // Кнопки пресетів (70–171 по Y, 10–290 по X)
       if (y >= 55 && y <= 215 && x >= 5 && x <= 315) return true;
       return false;
 
